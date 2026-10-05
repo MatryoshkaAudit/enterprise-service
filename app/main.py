@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import service_settings
 from app.database import db_manager
-from app.api.routers import bom_router, health_router
+from app.api.routers import bom_router, health_router, auth_router
 from app.grpc_server import serve_grpc
 from app.middleware import CorrelationIdMiddleware
 
@@ -51,6 +51,7 @@ app.add_middleware(CorrelationIdMiddleware)
 
 app.include_router(health_router.router)
 app.include_router(bom_router.router)
+app.include_router(auth_router.router)
 
 
 if __name__ == "__main__":
