@@ -1,0 +1,12 @@
+services:
+  enterprise-service:
+    build: .
+    container_name: matryoshka_enterprise_service
+    restart: unless-stopped
+    ports:
+      - "8001:8001"
+      - "50051:50051"
+    environment:
+      - DB_URL=postgresql+asyncpg://matryoshka:matryoshka_pass@postgres:5432/matryoshka_db
+      - SERVICE_REST_PORT=8001
+      - SERVICE_GRPC_PORT=50051
