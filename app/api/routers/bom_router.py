@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.database import db_manager
+from app.database import db_manager, get_db_session
 from app.repositories.bom_repository import BOMRepository
 from app.services.bom_service import (
     BOMService,
@@ -19,7 +19,7 @@ router = APIRouter(prefix="/api/v1/bom", tags=["Enterprise BOM"])
 
 
 async def get_bom_service(
-    session: AsyncSession = Depends(db_manager.get_session),
+    session: AsyncSession = Depends(get_db_session),
 ) -> BOMService:
     repo = BOMRepository(session)
     return BOMService(repo)

@@ -19,6 +19,11 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Запуск Matryoshka Enterprise Service...")
+    try:
+        from matryoshka_db.seed_data import seed_database
+        await seed_database()
+    except Exception as e:
+        logger.warning(f"Авто-инициализация БД: {e}")
     # Старт фонового gRPC-сервера
     grpc_server = await serve_grpc(service_settings.grpc_port)
     yield

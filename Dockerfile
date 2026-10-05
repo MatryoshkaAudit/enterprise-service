@@ -7,10 +7,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-COPY requirements.txt .
+COPY enterprise-service/requirements.txt requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY . .
+COPY protos /app/protos
+RUN pip install --no-cache-dir -e /app/protos
+
+COPY database /app/database
+RUN pip install --no-cache-dir -e /app/database
+
+COPY enterprise-service /app/enterprise-service
+WORKDIR /app/enterprise-service
 
 EXPOSE 8001 50051
 

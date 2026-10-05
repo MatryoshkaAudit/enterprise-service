@@ -9,5 +9,4 @@ grpcio-tools>=1.60.0
 protobuf>=4.25.0
 pytest>=7.4.0
 pytest-asyncio>=0.23.0
-matryoshka-protos
-matryoshka-database
+greenlet>=3.0.0
