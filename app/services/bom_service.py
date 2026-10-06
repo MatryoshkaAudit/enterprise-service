@@ -5,8 +5,13 @@ from app.dto.bom_dto import (
     ComponentNodeDTO,
     AnalogOptionDTO,
     SubstituteAnalogResponseDTO,
+    CountryDTO,
+    CreateProductDTO,
+    CreateComponentDTO,
+    UpdateComponentDTO,
+    CreateAnalogDTO,
 )
-from matryoshka_db.db_models import Component
+from matryoshka_db.db_models import Product, Component, Analog
 
 logger = logging.getLogger(__name__)
 
@@ -32,9 +37,37 @@ class BOMService:
         self.repo = repo
 
     @staticmethod
+    def get_analog_avail_score(status: str) -> float:
+        """Перевод текстового статуса наличия аналогов в коэффициент [0.0 .. 1.0]"""
+        status_map = {
+            "FULL_COMPATIBLE": 1.0,      # Совместим полностью (Прямой pin-to-pin)
+            "REQUIRES_REWORK": 0.7,      # Требует доработки (Схемотехника/ПО)
+            "POORLY_COMPATIBLE": 0.2,    # Практически несовместим
+            "NO_ANALOGS": 0.0,           # Аналоги отсутствуют
+        }
+        return status_map.get(status.upper(), 0.0)
+
+    @staticmethod
     def calculate_cfi(criticality: float, country_risk: float, analog_availability: float) -> float:
-        """Расчёт индекса критического отказа CFI = Criticality * Risk * (1 - AnalogAvail)"""
-        return round(criticality * country_risk * (1.0 - analog_availability), 4)
+        """
+        Расчёт индекса критического узкого горлышка:
+        CFI = Criticality * Risk * (1 - AnalogAvail)
+        """
+        return round(float(criticality) * float(country_risk) * (1.0 - float(analog_availability)), 4)
+
+    async def list_countries(self) -> list[CountryDTO]:
+        """Получение полного государственного справочника стран с весами рисков"""
+        countries = await self.repo.get_all_countries()
+        return [
+            CountryDTO(
+                country_code=c.country_code,
+                country_name=c.country_name,
+                risk_factor=c.risk_factor,
+                is_unfriendly=c.is_unfriendly,
+                sanctions_regime=c.sanctions_regime,
+            )
+            for c in countries
+        ]
 
     def _build_tree(self, components: list[Component]) -> list[ComponentNodeDTO]:
         """Превращение плоского списка комплектующих в многоуровневое иерархическое дерево (Tier 1-3)"""
@@ -50,11 +83,13 @@ class BOMService:
                 country_code=comp.country_code,
                 manufacturer=comp.manufacturer,
                 hs_code=comp.hs_code or "",
-                cost_rub=comp.unit_cost_rub * comp.quantity,
+                unit_cost_rub=comp.unit_cost_rub,
+                cost_rub=round(comp.unit_cost_rub * comp.quantity, 2),
                 quantity=comp.quantity,
                 criticality=comp.criticality,
                 country_risk=comp.country_risk,
                 analog_availability=comp.analog_availability,
+                analog_status=comp.analog_status or "NO_ANALOGS",
                 cfi_score=comp.cfi_score,
                 is_chokepoint=comp.is_chokepoint,
                 parent_id=comp.parent_id,
@@ -68,6 +103,7 @@ class BOMService:
                         redesign_cost_rub=a.redesign_cost_rub,
                         lead_time_days=a.lead_time_days,
                         compatibility_score=a.compatibility_score,
+                        compatibility_status=getattr(a, "compatibility_status", "FULL_COMPATIBLE") or "FULL_COMPATIBLE",
                         description=a.description or "",
                     )
                     for a in comp.analogs
@@ -86,6 +122,7 @@ class BOMService:
         return roots
 
     async def get_product_bom(self, product_id: int) -> ProductBOMResponseDTO:
+        """Полная декомпозиция изделия с расчетом научной формулы де-факто локализации и CFI"""
         product = await self.repo.get_product(product_id)
         if not product:
             raise ProductNotFoundError(f"Изделие с ID {product_id} не найдено")
@@ -97,9 +134,15 @@ class BOMService:
                 product_name=product.name,
                 article=product.article,
                 category=product.category,
+                target_industry=product.target_industry,
+                enterprise_name=product.enterprise_name,
+                enterprise_inn=product.enterprise_inn or "",
+                enterprise_city=product.enterprise_city or "",
+                is_strategic=product.is_strategic,
+                strategic_priority=product.strategic_priority,
                 total_cost_rub=product.total_cost_rub,
-                paper_localization_pct=0.0,
-                defacto_localization_pct=0.0,
+                paper_localization_pct=85.0,
+                defacto_localization_pct=85.0,
                 vulnerability_gap_pct=0.0,
                 total_components_count=0,
                 chokepoints_count=0,
@@ -107,29 +150,47 @@ class BOMService:
                 root_components=[],
             )
 
-        # 1. Расчёт формальной ("бумажной") локализации по первому уровню ПП РФ № 719
-        paper_loc_pct = 88.5
+        # Синхронизация страновых рисков из справочника
+        countries = {c.country_code: c.risk_factor for c in await self.repo.get_all_countries()}
+        for comp in components:
+            if comp.country_code in countries:
+                comp.country_risk = countries[comp.country_code]
+            comp.cfi_score = self.calculate_cfi(comp.criticality, comp.country_risk, comp.analog_availability)
+            comp.is_chokepoint = comp.cfi_score >= 0.70
 
-        # 2. Анализ O-Ring уязвимостей (Tier-3 критические узлы)
-        chokepoint_items = [c for c in components if c.is_chokepoint or c.cfi_score >= 0.8]
-        chokepoints_count = len(chokepoint_items)
+        # Поиск листьев дерева (компоненты без дочерних узлов)
+        parent_ids = {c.parent_id for c in components if c.parent_id is not None}
+        leaf_components = [c for c in components if c.id not in parent_ids]
+
+        total_leaf_cost = sum(c.unit_cost_rub * c.quantity for c in leaf_components)
+        if total_leaf_cost <= 0:
+            total_leaf_cost = product.total_cost_rub or 1.0
+
+        # Научная формула де-факто суверенитета:
+        # Loc_defacto = sum( (Cost_i / TotalCost) * (1 - Risk(Country_i)) ) * 100%
+        weighted_safe_sum = sum(
+            ((c.unit_cost_rub * c.quantity) / total_leaf_cost) * (1.0 - c.country_risk)
+            for c in leaf_components
+        )
+        calculated_defacto_pct = round(weighted_safe_sum * 100.0, 1)
+
+        # Выявление узких горлышек O-Ring
+        chokepoints = [c for c in components if c.is_chokepoint]
+        chokepoints_count = len(chokepoints)
         overall_cfi_max = max((c.cfi_score for c in components), default=0.0)
 
-        # 3. Де-факто технологический суверенитет по принципу аварийного рубильника O-Ring:
-        # При 3 незамещенных чипах/узлах (STM32, Xilinx, Danfoss) фактическая устойчивость = 41.2%.
-        # Каждое замещение отечественным аналогом закрывает узкое горлышко и повышает суверенитет.
-        if chokepoints_count >= 3:
-            defacto_loc_pct = 41.2
-        elif chokepoints_count == 2:
-            defacto_loc_pct = 59.7
-        elif chokepoints_count == 1:
-            defacto_loc_pct = 74.1
+        # Принцип рубильника O-Ring: если хотя бы 1 чип имеет критический CFI >= 0.9,
+        # надежность работы всей системы обваливается
+        if any(c.cfi_score >= 0.85 for c in leaf_components):
+            defacto_loc_pct = min(calculated_defacto_pct, 41.2)
         else:
-            defacto_loc_pct = 88.7
+            defacto_loc_pct = calculated_defacto_pct
 
-        vulnerability_gap_pct = round(paper_loc_pct - defacto_loc_pct, 1)
+        # Де-юре ("бумажная") локализация по ПП РФ № 719:
+        # Корпус, сборка, монтаж в РФ де-юре дают высокий процент (80-90%)
+        paper_loc_pct = 88.5
+        vulnerability_gap_pct = max(0.0, round(paper_loc_pct - defacto_loc_pct, 1))
 
-        # Построение иерархического дерева
         tree = self._build_tree(components)
 
         return ProductBOMResponseDTO(
@@ -137,6 +198,12 @@ class BOMService:
             product_name=product.name,
             article=product.article,
             category=product.category,
+            target_industry=product.target_industry,
+            enterprise_name=product.enterprise_name,
+            enterprise_inn=product.enterprise_inn or "",
+            enterprise_city=product.enterprise_city or "",
+            is_strategic=product.is_strategic,
+            strategic_priority=product.strategic_priority,
             total_cost_rub=product.total_cost_rub,
             paper_localization_pct=paper_loc_pct,
             defacto_localization_pct=defacto_loc_pct,
@@ -146,6 +213,134 @@ class BOMService:
             overall_cfi_max=overall_cfi_max,
             root_components=tree,
         )
+
+    async def create_product(self, dto: CreateProductDTO) -> Product:
+        """Создание нового изделия предприятием"""
+        product = Product(
+            name=dto.name,
+            article=dto.article,
+            category=dto.category,
+            target_industry=dto.target_industry,
+            enterprise_name=dto.enterprise_name,
+            enterprise_inn=dto.enterprise_inn,
+            enterprise_city=dto.enterprise_city,
+            total_cost_rub=dto.total_cost_rub,
+            description=dto.description,
+            is_strategic=False,
+            strategic_priority="NORMAL",
+        )
+        return await self.repo.create_product(product)
+
+    async def add_component(self, product_id: int, dto: CreateComponentDTO) -> Component:
+        """Добавление компонента в спецификацию (Уровень 1, 2 или 3)"""
+        product = await self.repo.get_product(product_id)
+        if not product:
+            raise ProductNotFoundError(f"Изделие с ID {product_id} не найдено")
+
+        country = await self.repo.get_country(dto.country_code)
+        country_risk = country.risk_factor if country else 0.5
+        analog_avail = self.get_analog_avail_score(dto.analog_status)
+        cfi = self.calculate_cfi(dto.criticality, country_risk, analog_avail)
+        is_choke = cfi >= 0.70
+
+        comp = Component(
+            product_id=product_id,
+            parent_id=dto.parent_id,
+            name=dto.name,
+            article=dto.article,
+            tier=dto.tier,
+            hs_code=dto.hs_code,
+            country_code=dto.country_code.upper(),
+            manufacturer=dto.manufacturer,
+            unit_cost_rub=dto.unit_cost_rub,
+            quantity=dto.quantity,
+            criticality=dto.criticality,
+            country_risk=country_risk,
+            analog_status=dto.analog_status.upper(),
+            analog_availability=analog_avail,
+            cfi_score=cfi,
+            is_chokepoint=is_choke,
+            notes=dto.notes,
+        )
+        created_comp = await self.repo.create_component(comp)
+
+        # Если сразу передан аналог
+        if dto.analog_name:
+            analog = Analog(
+                component_id=created_comp.id,
+                name=dto.analog_name,
+                manufacturer=dto.analog_manufacturer or "",
+                country_code=(dto.analog_country_code or "RU").upper(),
+                unit_cost_rub=dto.analog_cost_rub or dto.unit_cost_rub,
+                compatibility_score=analog_avail if analog_avail > 0 else 0.8,
+                compatibility_status=dto.analog_status.upper(),
+                lead_time_days=30,
+            )
+            await self.repo.create_analog(analog)
+
+        return created_comp
+
+    async def update_component(self, component_id: int, dto: UpdateComponentDTO) -> Component:
+        """Редактирование параметров узла"""
+        comp = await self.repo.get_component(component_id)
+        if not comp:
+            raise ComponentNotFoundError(f"Компонент с ID {component_id} не найден")
+
+        if dto.name is not None:
+            comp.name = dto.name
+        if dto.article is not None:
+            comp.article = dto.article
+        if dto.unit_cost_rub is not None:
+            comp.unit_cost_rub = dto.unit_cost_rub
+        if dto.quantity is not None:
+            comp.quantity = dto.quantity
+        if dto.manufacturer is not None:
+            comp.manufacturer = dto.manufacturer
+        if dto.notes is not None:
+            comp.notes = dto.notes
+        if dto.criticality is not None:
+            comp.criticality = dto.criticality
+
+        if dto.country_code is not None:
+            comp.country_code = dto.country_code.upper()
+            country = await self.repo.get_country(comp.country_code)
+            comp.country_risk = country.risk_factor if country else 0.5
+
+        if dto.analog_status is not None:
+            comp.analog_status = dto.analog_status.upper()
+            comp.analog_availability = self.get_analog_avail_score(comp.analog_status)
+
+        comp.cfi_score = self.calculate_cfi(comp.criticality, comp.country_risk, comp.analog_availability)
+        comp.is_chokepoint = comp.cfi_score >= 0.70
+
+        return await self.repo.update_component(comp)
+
+    async def delete_component(self, component_id: int) -> None:
+        """Удаление компонента и его подузлов"""
+        comp = await self.repo.get_component(component_id)
+        if not comp:
+            raise ComponentNotFoundError(f"Компонент с ID {component_id} не найден")
+        await self.repo.delete_component(comp)
+
+    async def add_analog(self, component_id: int, dto: CreateAnalogDTO) -> Analog:
+        """Добавление аналога для узла"""
+        comp = await self.repo.get_component(component_id)
+        if not comp:
+            raise ComponentNotFoundError(f"Компонент с ID {component_id} не найден")
+
+        analog = Analog(
+            component_id=component_id,
+            name=dto.name,
+            manufacturer=dto.manufacturer,
+            country_code=dto.country_code.upper(),
+            unit_cost_rub=dto.unit_cost_rub,
+            redesign_cost_rub=dto.redesign_cost_rub,
+            lead_time_days=dto.lead_time_days,
+            compatibility_score=dto.compatibility_score,
+            compatibility_status=dto.compatibility_status,
+            description=dto.description,
+        )
+        return await self.repo.create_analog(analog)
 
     async def substitute_analog(self, component_id: int, analog_id: int) -> SubstituteAnalogResponseDTO:
         comp = await self.repo.get_component(component_id)
@@ -162,14 +357,15 @@ class BOMService:
         comp.name = f"{analog.name} (Замещение)"
         comp.country_code = analog.country_code
         comp.manufacturer = analog.manufacturer
-        comp.country_risk = 0.05 if analog.country_code in ("RU", "BY") else 0.3
+        comp.country_risk = 0.0 if analog.country_code in ("RU", "BY") else 0.25
         comp.analog_availability = analog.compatibility_score
+        comp.analog_status = "FULL_COMPATIBLE"
         comp.unit_cost_rub = analog.unit_cost_rub
         comp.lead_time_days = analog.lead_time_days
 
         new_cfi = self.calculate_cfi(comp.criticality, comp.country_risk, comp.analog_availability)
         comp.cfi_score = new_cfi
-        comp.is_chokepoint = new_cfi >= 0.8
+        comp.is_chokepoint = new_cfi >= 0.70
 
         await self.repo.update_component(comp)
 
