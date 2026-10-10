@@ -76,6 +76,13 @@ class CreateProductDTO(BaseModel):
     enterprise_city: str | None = "г. Вологда"
     total_cost_rub: float = 0.0
     description: str | None = None
+    audit_standard: str | None = "ПП РФ № 719"
+    okpd2_code: str | None = None
+    okpd2_name: str | None = None
+    tnved_code: str | None = None
+    normative_year: int | None = 2025
+    rep_level: int | None = None
+    eskd_decimal: str | None = None
 
 
 class CreateComponentDTO(BaseModel):
