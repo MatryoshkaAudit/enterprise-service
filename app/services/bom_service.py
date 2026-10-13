@@ -55,6 +55,80 @@ class BOMService:
         """
         return round(float(criticality) * float(country_risk) * (1.0 - float(analog_availability)), 4)
 
+    @staticmethod
+    def calculate_paper_localization(components: list) -> float:
+        """
+        Де-юре (бумажная) локализация по нормам ПП РФ № 719 / СТ-1.
+        Рассчитывается динамически как стоимостная доля агрегатов высшего порядка (Tier-1),
+        происходящих из контура ЕАЭС (RU, BY, KZ, AM, KG).
+        """
+        if not components:
+            return 100.0
+
+        tier1 = [c for c in components if getattr(c, "tier", None) == 1]
+        if tier1:
+            tot_cost = sum(c.unit_cost_rub * c.quantity for c in tier1)
+            if tot_cost > 0:
+                eaeu_cost = sum(
+                    c.unit_cost_rub * c.quantity
+                    for c in tier1
+                    if getattr(c, "country_code", "") in ("RU", "BY", "KZ", "AM", "KG")
+                )
+                return round((eaeu_cost / tot_cost) * 100.0, 1)
+            return 100.0
+
+        top_level = [c for c in components if getattr(c, "parent_id", None) is None]
+        if top_level:
+            tot_cost = sum(c.unit_cost_rub * c.quantity for c in top_level)
+            if tot_cost > 0:
+                eaeu_cost = sum(
+                    c.unit_cost_rub * c.quantity
+                    for c in top_level
+                    if getattr(c, "country_code", "") in ("RU", "BY", "KZ", "AM", "KG")
+                )
+                return round((eaeu_cost / tot_cost) * 100.0, 1)
+        return 100.0
+
+    @staticmethod
+    def calculate_defacto_localization(leaf_components: list, total_leaf_cost: float) -> tuple[float, float, int]:
+        """
+        Непрерывный расчет де-факто суверенитета по теории O-Ring Майкла Кремера:
+        1. Взвешенный суверенитет листьев дерева: Loc_raw = sum( (Cost_i / Total) * (1 - Risk_i) * omega_i )
+        2. Мультипликатор надежности Кремера: Omega = prod(1 - 0.25 * CFI_j) для всех chokepoint-узлов (CFI >= 0.70).
+        Возвращает: (defacto_loc_pct, overall_cfi_max, chokepoints_count).
+        """
+        if not leaf_components or total_leaf_cost <= 0:
+            return (100.0, 0.0, 0)
+
+        weighted_safe_sum = 0.0
+        for c in leaf_components:
+            cost = c.unit_cost_rub * c.quantity
+            status = getattr(c, "analog_status", "") or "NO_ANALOGS"
+            country = getattr(c, "country_code", "")
+            analog_w = 1.0 if status == "FULL_COMPATIBLE" else (
+                0.7 if status == "REQUIRES_REWORK" else (
+                    0.2 if status == "POORLY_COMPATIBLE" else (
+                        1.0 if country in ("RU", "BY") else 0.0
+                    )
+                )
+            )
+            safe_factor = (1.0 - float(getattr(c, "country_risk", 0.0))) * analog_w
+            weighted_safe_sum += (cost / total_leaf_cost) * safe_factor
+
+        raw_defacto_pct = round(weighted_safe_sum * 100.0, 1)
+
+        chokepoints = [c for c in leaf_components if getattr(c, "is_chokepoint", False) or getattr(c, "cfi_score", 0.0) >= 0.70]
+        chokepoints_count = len(chokepoints)
+        overall_cfi_max = max((getattr(c, "cfi_score", 0.0) for c in leaf_components), default=0.0)
+
+        o_ring_multiplier = 1.0
+        for choke in chokepoints:
+            cfi = getattr(choke, "cfi_score", 0.8)
+            o_ring_multiplier *= (1.0 - 0.25 * float(cfi))
+
+        defacto_loc_pct = round(raw_defacto_pct * o_ring_multiplier, 1)
+        return (defacto_loc_pct, overall_cfi_max, chokepoints_count)
+
     async def list_countries(self) -> list[CountryDTO]:
         """Получение полного государственного справочника стран с весами рисков"""
         countries = await self.repo.get_all_countries()
@@ -90,6 +164,7 @@ class BOMService:
                 country_risk=comp.country_risk,
                 analog_availability=comp.analog_availability,
                 analog_status=comp.analog_status or "NO_ANALOGS",
+                lead_time_days=comp.lead_time_days or 14,
                 cfi_score=comp.cfi_score,
                 is_chokepoint=comp.is_chokepoint,
                 parent_id=comp.parent_id,
@@ -166,29 +241,14 @@ class BOMService:
         if total_leaf_cost <= 0:
             total_leaf_cost = product.total_cost_rub or 1.0
 
-        # Научная формула де-факто суверенитета:
-        # Loc_defacto = sum( (Cost_i / TotalCost) * (1 - Risk(Country_i)) ) * 100%
-        weighted_safe_sum = sum(
-            ((c.unit_cost_rub * c.quantity) / total_leaf_cost) * (1.0 - c.country_risk)
-            for c in leaf_components
+        # Динамический расчет де-юре (бумажной) локализации по ПП РФ № 719 / СТ-1
+        paper_loc_pct = self.calculate_paper_localization(components)
+
+        # Динамический расчет де-факто технологического суверенитета по Кремеру (O-Ring)
+        defacto_loc_pct, overall_cfi_max, chokepoints_count = self.calculate_defacto_localization(
+            leaf_components, total_leaf_cost
         )
-        calculated_defacto_pct = round(weighted_safe_sum * 100.0, 1)
 
-        # Выявление узких горлышек O-Ring
-        chokepoints = [c for c in components if c.is_chokepoint]
-        chokepoints_count = len(chokepoints)
-        overall_cfi_max = max((c.cfi_score for c in components), default=0.0)
-
-        # Принцип рубильника O-Ring: если хотя бы 1 чип имеет критический CFI >= 0.9,
-        # надежность работы всей системы обваливается
-        if any(c.cfi_score >= 0.85 for c in leaf_components):
-            defacto_loc_pct = min(calculated_defacto_pct, 41.2)
-        else:
-            defacto_loc_pct = calculated_defacto_pct
-
-        # Де-юре ("бумажная") локализация по ПП РФ № 719:
-        # Корпус, сборка, монтаж в РФ де-юре дают высокий процент (80-90%)
-        paper_loc_pct = 88.5
         vulnerability_gap_pct = max(0.0, round(paper_loc_pct - defacto_loc_pct, 1))
 
         tree = self._build_tree(components)
@@ -260,6 +320,7 @@ class BOMService:
             analog_availability=analog_avail,
             cfi_score=cfi,
             is_chokepoint=is_choke,
+            lead_time_days=dto.lead_time_days or 14,
             notes=dto.notes,
         )
         created_comp = await self.repo.create_component(comp)
@@ -272,9 +333,10 @@ class BOMService:
                 manufacturer=dto.analog_manufacturer or "",
                 country_code=(dto.analog_country_code or "RU").upper(),
                 unit_cost_rub=dto.analog_cost_rub or dto.unit_cost_rub,
+                redesign_cost_rub=dto.analog_redesign_cost_rub or 0.0,
                 compatibility_score=analog_avail if analog_avail > 0 else 0.8,
                 compatibility_status=dto.analog_status.upper(),
-                lead_time_days=30,
+                lead_time_days=dto.analog_lead_time_days or 30,
             )
             await self.repo.create_analog(analog)
 
@@ -296,10 +358,14 @@ class BOMService:
             comp.quantity = dto.quantity
         if dto.manufacturer is not None:
             comp.manufacturer = dto.manufacturer
+        if dto.hs_code is not None:
+            comp.hs_code = dto.hs_code
         if dto.notes is not None:
             comp.notes = dto.notes
         if dto.criticality is not None:
             comp.criticality = dto.criticality
+        if dto.lead_time_days is not None:
+            comp.lead_time_days = dto.lead_time_days
 
         if dto.country_code is not None:
             comp.country_code = dto.country_code.upper()
@@ -309,6 +375,41 @@ class BOMService:
         if dto.analog_status is not None:
             comp.analog_status = dto.analog_status.upper()
             comp.analog_availability = self.get_analog_avail_score(comp.analog_status)
+
+        # Синхронизация данных отечественного аналога при их наличии
+        if dto.analog_name is not None or dto.analog_manufacturer is not None or dto.analog_cost_rub is not None or dto.commercial_offer_doc is not None:
+            if comp.analogs and len(comp.analogs) > 0:
+                first_analog = comp.analogs[0]
+                if dto.analog_name is not None:
+                    first_analog.name = dto.analog_name
+                if dto.analog_manufacturer is not None:
+                    first_analog.manufacturer = dto.analog_manufacturer
+                if dto.analog_cost_rub is not None:
+                    first_analog.unit_cost_rub = dto.analog_cost_rub
+                if dto.redesign_cost_rub is not None:
+                    first_analog.redesign_cost_rub = dto.redesign_cost_rub
+                if dto.lead_time_days is not None:
+                    first_analog.lead_time_days = dto.lead_time_days
+                if dto.commercial_offer_doc is not None:
+                    first_analog.description = dto.commercial_offer_doc
+                if dto.analog_status is not None:
+                    first_analog.compatibility_status = dto.analog_status
+            elif dto.analog_name or dto.analog_manufacturer:
+                new_analog = Analog(
+                    component_id=comp.id,
+                    name=dto.analog_name or "Отечественный аналог",
+                    manufacturer=dto.analog_manufacturer or "Предприятие в РФ/ЕАЭС",
+                    country_code="RU",
+                    unit_cost_rub=dto.analog_cost_rub or 0.0,
+                    redesign_cost_rub=dto.redesign_cost_rub or 0.0,
+                    lead_time_days=dto.lead_time_days or 28,
+                    compatibility_score=1.0 if comp.analog_status == "FULL_COMPATIBLE" else 0.7,
+                    compatibility_status=comp.analog_status or "FULL_COMPATIBLE",
+                    description=dto.commercial_offer_doc or "",
+                )
+                await self.repo.create_analog(new_analog)
+        elif dto.redesign_cost_rub is not None and comp.analogs:
+            comp.analogs[0].redesign_cost_rub = dto.redesign_cost_rub
 
         comp.cfi_score = self.calculate_cfi(comp.criticality, comp.country_risk, comp.analog_availability)
         comp.is_chokepoint = comp.cfi_score >= 0.70

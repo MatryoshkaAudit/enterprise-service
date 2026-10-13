@@ -37,6 +37,7 @@ class ComponentNodeDTO(BaseModel):
     country_risk: float
     analog_availability: float
     analog_status: str = "NO_ANALOGS"
+    lead_time_days: int = 14
     cfi_score: float
     is_chokepoint: bool
     parent_id: int | None = None
@@ -96,24 +97,34 @@ class CreateComponentDTO(BaseModel):
     unit_cost_rub: float = 0.0
     quantity: float = 1.0
     criticality: float = 1.0
+    lead_time_days: int = 14
     analog_status: str = "NO_ANALOGS" # 'FULL_COMPATIBLE', 'REQUIRES_REWORK', 'POORLY_COMPATIBLE', 'NO_ANALOGS'
     # Опционально создание аналога сразу
     analog_name: str | None = None
     analog_manufacturer: str | None = None
     analog_country_code: str | None = None
     analog_cost_rub: float | None = None
+    analog_lead_time_days: int | None = None
+    analog_redesign_cost_rub: float | None = None
     notes: str | None = None
 
 
 class UpdateComponentDTO(BaseModel):
     name: str | None = None
     article: str | None = None
+    hs_code: str | None = None
     unit_cost_rub: float | None = None
     quantity: float | None = None
     country_code: str | None = None
     manufacturer: str | None = None
     criticality: float | None = None
     analog_status: str | None = None
+    lead_time_days: int | None = None
+    redesign_cost_rub: float | None = None
+    analog_name: str | None = None
+    analog_manufacturer: str | None = None
+    analog_cost_rub: float | None = None
+    commercial_offer_doc: str | None = None
     notes: str | None = None
 
 
