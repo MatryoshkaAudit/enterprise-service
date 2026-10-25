@@ -1,25 +1,23 @@
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db_session
-from app.repositories.bom_repository import BOMRepository
-from app.services.bom_service import (
-    BOMService,
-    ProductNotFoundError,
-    ComponentNotFoundError,
-    AnalogNotFoundError,
-)
 from app.dto.bom_dto import (
+    CountryDTO,
+    CreateAnalogDTO,
+    CreateComponentDTO,
+    CreateProductDTO,
     ProductBOMResponseDTO,
     SubstituteAnalogRequestDTO,
     SubstituteAnalogResponseDTO,
-    CountryDTO,
-    CreateProductDTO,
-    CreateComponentDTO,
     UpdateComponentDTO,
-    CreateAnalogDTO,
-    ComponentNodeDTO,
-    AnalogOptionDTO,
+)
+from app.repositories.bom_repository import BOMRepository
+from app.services.bom_service import (
+    AnalogNotFoundError,
+    BOMService,
+    ComponentNotFoundError,
+    ProductNotFoundError,
 )
 
 router = APIRouter(prefix="/api/v1/bom", tags=["Enterprise BOM & Manufacturing Hierarchy"])
@@ -91,9 +89,9 @@ async def get_product_bom_tree(
     try:
         return await service.get_product_bom(product_id)
     except ProductNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        raise HTTPException(status_code=404, detail=str(e)) from e
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Внутренняя ошибка сервиса: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Внутренняя ошибка сервиса: {e!s}") from e
 
 
 @router.post("/products/{product_id}/components", response_model=dict)
@@ -114,9 +112,9 @@ async def add_component(
             "is_chokepoint": comp.is_chokepoint,
         }
     except ProductNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        raise HTTPException(status_code=404, detail=str(e)) from e
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Ошибка добавления узла: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Ошибка добавления узла: {e!s}") from e
 
 
 @router.put("/components/{component_id}", response_model=dict)
@@ -136,9 +134,9 @@ async def update_component(
             "is_chokepoint": comp.is_chokepoint,
         }
     except ComponentNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        raise HTTPException(status_code=404, detail=str(e)) from e
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Ошибка обновления узла: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Ошибка обновления узла: {e!s}") from e
 
 
 @router.delete("/components/{component_id}", response_model=dict)
@@ -151,9 +149,9 @@ async def delete_component(
         await service.delete_component(component_id)
         return {"success": True, "deleted_component_id": component_id}
     except ComponentNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        raise HTTPException(status_code=404, detail=str(e)) from e
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Ошибка удаления: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Ошибка удаления: {e!s}") from e
 
 
 @router.post("/components/{component_id}/analogs", response_model=dict)
@@ -172,9 +170,9 @@ async def add_component_analog(
             "manufacturer": analog.manufacturer,
         }
     except ComponentNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        raise HTTPException(status_code=404, detail=str(e)) from e
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Ошибка добавления аналога: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Ошибка добавления аналога: {e!s}") from e
 
 
 @router.post("/components/substitute-analog", response_model=SubstituteAnalogResponseDTO)
@@ -186,6 +184,6 @@ async def substitute_component_analog(
     try:
         return await service.substitute_analog(payload.component_id, payload.analog_id)
     except (ComponentNotFoundError, AnalogNotFoundError) as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        raise HTTPException(status_code=404, detail=str(e)) from e
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Ошибка пересчёта замещения: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Ошибка пересчёта замещения: {e!s}") from e

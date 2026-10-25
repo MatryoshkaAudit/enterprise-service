@@ -1,17 +1,18 @@
 import logging
-from app.repositories.bom_repository import BOMRepository
+
 from app.dto.bom_dto import (
-    ProductBOMResponseDTO,
-    ComponentNodeDTO,
     AnalogOptionDTO,
-    SubstituteAnalogResponseDTO,
+    ComponentNodeDTO,
     CountryDTO,
-    CreateProductDTO,
-    CreateComponentDTO,
-    UpdateComponentDTO,
     CreateAnalogDTO,
+    CreateComponentDTO,
+    CreateProductDTO,
+    ProductBOMResponseDTO,
+    SubstituteAnalogResponseDTO,
+    UpdateComponentDTO,
 )
-from matryoshka_db.db_models import Product, Component, Analog
+from app.repositories.bom_repository import BOMRepository
+from matryoshka_db.db_models import Analog, Component, Product
 
 logger = logging.getLogger(__name__)
 
@@ -453,7 +454,7 @@ class BOMService:
             raise AnalogNotFoundError(f"Аналог с ID {analog_id} не найден для данного узла")
 
         old_cfi = comp.cfi_score
-        
+
         # Обновление атрибутов компонента отечественным аналогом
         comp.name = f"{analog.name} (Замещение)"
         comp.country_code = analog.country_code

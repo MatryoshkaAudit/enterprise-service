@@ -1,9 +1,11 @@
 import logging
+
 import grpc
-from protos.bom import bom_service_pb2, bom_service_pb2_grpc
+
 from app.database import db_manager
 from app.repositories.bom_repository import BOMRepository
 from app.services.bom_service import BOMService
+from protos.bom import bom_service_pb2, bom_service_pb2_grpc
 
 logger = logging.getLogger(__name__)
 

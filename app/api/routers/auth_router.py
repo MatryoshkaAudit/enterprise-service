@@ -1,6 +1,7 @@
 import logging
-from fastapi import APIRouter, Depends, HTTPException, Header, status
-from pydantic import BaseModel, EmailStr
+
+from fastapi import APIRouter, Depends, Header, HTTPException, status
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db_session
@@ -92,7 +93,7 @@ async def demo_login(req: DemoLoginRequest, session: AsyncSession = Depends(get_
     """Быстрый вход для презентации комиссии (Завод или Регулятор)"""
     auth_service = AuthService(session)
     target_role = "regulator_admin" if req.role in ["regulator", "admin"] else "enterprise_engineer"
-    
+
     user = await auth_service.get_user_by_role(target_role)
     if not user:
         # Fallback synthetic demo user if db is not seeded
@@ -127,7 +128,7 @@ async def demo_login(req: DemoLoginRequest, session: AsyncSession = Depends(get_
             "inn": user_data.inn,
         })
         return LoginResponse(access_token=token, user=user_data)
-        
+
     token = auth_service.issue_token(user)
     return LoginResponse(
         access_token=token,

@@ -1,8 +1,8 @@
-from sqlalchemy import select, delete
-from sqlalchemy.orm import selectinload
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
-from matryoshka_db.db_models import Product, Component, Analog, CountryRisk
+from matryoshka_db.db_models import Analog, Component, CountryRisk, Product
 
 
 class BOMRepository:

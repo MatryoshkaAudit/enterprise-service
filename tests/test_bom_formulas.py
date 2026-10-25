@@ -1,4 +1,3 @@
-import pytest
 from app.services.bom_service import BOMService
 
 
