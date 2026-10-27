@@ -33,6 +33,7 @@ def test_calculate_cfi_after_substitution():
 
 def test_calculate_paper_localization_dynamic():
     """Тест вычисления бумажной локализации по Tier 1 адвалорной доле"""
+
     class MockComp:
         def __init__(self, tier, unit_cost_rub, quantity, country_code):
             self.tier = tier
@@ -50,8 +51,11 @@ def test_calculate_paper_localization_dynamic():
 
 def test_calculate_defacto_localization_kremer_o_ring():
     """Тест непрерывной формулы Кремера O-Ring с мультипликативным штрафом узких горлышек"""
+
     class MockLeaf:
-        def __init__(self, unit_cost_rub, quantity, country_code, country_risk, cfi_score, is_chokepoint, analog_status):
+        def __init__(
+            self, unit_cost_rub, quantity, country_code, country_risk, cfi_score, is_chokepoint, analog_status
+        ):
             self.unit_cost_rub = unit_cost_rub
             self.quantity = quantity
             self.country_code = country_code
@@ -80,4 +84,3 @@ def test_calculate_defacto_localization_kremer_o_ring():
     # Наличие O-Ring chokepoint с CFI=0.9025 дает штраф, де-факто существенно ниже 80%
     assert defacto_choked < 80.0
     assert defacto_choked > 0.0
-

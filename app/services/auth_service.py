@@ -68,8 +68,8 @@ def decode_jwt_token(token: str) -> dict[str, Any] | None:
             return None
 
         return payload_data
-    except Exception as e:
-        logger.error(f"Ошибка валидации JWT: {e}")
+    except (ValueError, KeyError, json.JSONDecodeError, UnicodeDecodeError) as e:
+        logger.warning(f"Ошибка валидации структуры JWT: {e}")
         return None
 
 

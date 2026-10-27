@@ -2,7 +2,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from matryoshka_db.db_models import Analog, Component, CountryRisk, Product
+from matryoshka_db.db_models import Analog, Certificate, Component, CountryRisk, PolicyRule, Product
 
 
 class BOMRepository:
@@ -40,11 +40,7 @@ class BOMRepository:
         return list(result.scalars().all())
 
     async def get_component(self, component_id: int) -> Component | None:
-        query = (
-            select(Component)
-            .where(Component.id == component_id)
-            .options(selectinload(Component.analogs))
-        )
+        query = select(Component).where(Component.id == component_id).options(selectinload(Component.analogs))
         result = await self.session.execute(query)
         return result.scalar_one_or_none()
 
@@ -85,3 +81,25 @@ class BOMRepository:
         query = select(CountryRisk).where(CountryRisk.country_code == country_code.upper())
         result = await self.session.execute(query)
         return result.scalar_one_or_none()
+
+    async def get_product_certificate(self, product_id: int) -> Certificate | None:
+        query = select(Certificate).where(Certificate.product_id == product_id).order_by(Certificate.id.desc())
+        result = await self.session.execute(query)
+        return result.scalar_one_or_none()
+
+    async def get_policy_rule(self, target_industry: str | None) -> PolicyRule | None:
+        if not target_industry:
+            query = select(PolicyRule).limit(1)
+            result = await self.session.execute(query)
+            return result.scalars().first()
+        code_prefix = target_industry.split()[0]
+        query = select(PolicyRule).where(
+            (PolicyRule.industry_code == target_industry) | (PolicyRule.industry_code.startswith(code_prefix))
+        )
+        result = await self.session.execute(query)
+        rule = result.scalars().first()
+        if not rule:
+            query = select(PolicyRule).limit(1)
+            result = await self.session.execute(query)
+            rule = result.scalars().first()
+        return rule

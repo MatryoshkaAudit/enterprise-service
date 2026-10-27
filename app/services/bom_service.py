@@ -8,6 +8,7 @@ from app.dto.bom_dto import (
     CreateComponentDTO,
     CreateProductDTO,
     ProductBOMResponseDTO,
+    ProductListItemDTO,
     SubstituteAnalogResponseDTO,
     UpdateComponentDTO,
 )
@@ -41,10 +42,10 @@ class BOMService:
     def get_analog_avail_score(status: str) -> float:
         """Перевод текстового статуса наличия аналогов в коэффициент [0.0 .. 1.0]"""
         status_map = {
-            "FULL_COMPATIBLE": 1.0,      # Совместим полностью (Прямой pin-to-pin)
-            "REQUIRES_REWORK": 0.7,      # Требует доработки (Схемотехника/ПО)
-            "POORLY_COMPATIBLE": 0.2,    # Практически несовместим
-            "NO_ANALOGS": 0.0,           # Аналоги отсутствуют
+            "FULL_COMPATIBLE": 1.0,  # Совместим полностью (Прямой pin-to-pin)
+            "REQUIRES_REWORK": 0.7,  # Требует доработки (Схемотехника/ПО)
+            "POORLY_COMPATIBLE": 0.2,  # Практически несовместим
+            "NO_ANALOGS": 0.0,  # Аналоги отсутствуют
         }
         return status_map.get(status.upper(), 0.0)
 
@@ -106,11 +107,13 @@ class BOMService:
             cost = c.unit_cost_rub * c.quantity
             status = getattr(c, "analog_status", "") or "NO_ANALOGS"
             country = getattr(c, "country_code", "")
-            analog_w = 1.0 if status == "FULL_COMPATIBLE" else (
-                0.7 if status == "REQUIRES_REWORK" else (
-                    0.2 if status == "POORLY_COMPATIBLE" else (
-                        1.0 if country in ("RU", "BY") else 0.0
-                    )
+            analog_w = (
+                1.0
+                if status == "FULL_COMPATIBLE"
+                else (
+                    0.7
+                    if status == "REQUIRES_REWORK"
+                    else (0.2 if status == "POORLY_COMPATIBLE" else (1.0 if country in ("RU", "BY") else 0.0))
                 )
             )
             safe_factor = (1.0 - float(getattr(c, "country_risk", 0.0))) * analog_w
@@ -118,14 +121,16 @@ class BOMService:
 
         raw_defacto_pct = round(weighted_safe_sum * 100.0, 1)
 
-        chokepoints = [c for c in leaf_components if getattr(c, "is_chokepoint", False) or getattr(c, "cfi_score", 0.0) >= 0.70]
+        chokepoints = [
+            c for c in leaf_components if getattr(c, "is_chokepoint", False) or getattr(c, "cfi_score", 0.0) >= 0.70
+        ]
         chokepoints_count = len(chokepoints)
         overall_cfi_max = max((getattr(c, "cfi_score", 0.0) for c in leaf_components), default=0.0)
 
         o_ring_multiplier = 1.0
         for choke in chokepoints:
             cfi = getattr(choke, "cfi_score", 0.8)
-            o_ring_multiplier *= (1.0 - 0.25 * float(cfi))
+            o_ring_multiplier *= 1.0 - 0.25 * float(cfi)
 
         defacto_loc_pct = round(raw_defacto_pct * o_ring_multiplier, 1)
         return (defacto_loc_pct, overall_cfi_max, chokepoints_count)
@@ -143,6 +148,45 @@ class BOMService:
             )
             for c in countries
         ]
+
+    async def list_products_with_metrics(self) -> list[ProductListItemDTO]:
+        """Возвращает список изделий с динамически рассчитанными метриками O-Ring суверенитета"""
+        products = await self.repo.get_all_products()
+        results: list[ProductListItemDTO] = []
+        for p in products:
+            bom = await self.get_product_bom(p.id)
+            cert = await self.repo.get_product_certificate(p.id)
+            rule = await self.repo.get_policy_rule(p.target_industry)
+            achieved = (
+                cert.pp719_points
+                if cert and cert.pp719_points > 0
+                else (rule.min_points_required if rule and bom.defacto_localization_pct >= 50 else 0)
+            )
+            required = rule.min_points_required if rule else 0
+            results.append(
+                ProductListItemDTO(
+                    id=p.id,
+                    name=p.name,
+                    article=p.article,
+                    category=p.category,
+                    target_industry=p.target_industry,
+                    enterprise_name=p.enterprise_name,
+                    enterprise_inn=p.enterprise_inn,
+                    enterprise_city=p.enterprise_city,
+                    total_cost_rub=p.total_cost_rub,
+                    is_strategic=p.is_strategic,
+                    strategic_priority=p.strategic_priority,
+                    strategic_notes=p.strategic_notes,
+                    description=p.description,
+                    paper_localization_pct=bom.paper_localization_pct,
+                    defacto_localization_pct=bom.defacto_localization_pct,
+                    vulnerability_gap_pct=bom.vulnerability_gap_pct,
+                    chokepoints_count=bom.chokepoints_count,
+                    achieved_points=achieved,
+                    required_points=required,
+                )
+            )
+        return results
 
     def _build_tree(self, components: list[Component]) -> list[ComponentNodeDTO]:
         """Превращение плоского списка комплектующих в многоуровневое иерархическое дерево (Tier 1-3)"""
@@ -378,7 +422,12 @@ class BOMService:
             comp.analog_availability = self.get_analog_avail_score(comp.analog_status)
 
         # Синхронизация данных отечественного аналога при их наличии
-        if dto.analog_name is not None or dto.analog_manufacturer is not None or dto.analog_cost_rub is not None or dto.commercial_offer_doc is not None:
+        if (
+            dto.analog_name is not None
+            or dto.analog_manufacturer is not None
+            or dto.analog_cost_rub is not None
+            or dto.commercial_offer_doc is not None
+        ):
             if comp.analogs and len(comp.analogs) > 0:
                 first_analog = comp.analogs[0]
                 if dto.analog_name is not None:

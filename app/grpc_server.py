@@ -4,7 +4,12 @@ import grpc
 
 from app.database import db_manager
 from app.repositories.bom_repository import BOMRepository
-from app.services.bom_service import BOMService
+from app.services.bom_service import (
+    AnalogNotFoundError,
+    BOMService,
+    ComponentNotFoundError,
+    ProductNotFoundError,
+)
 from protos.bom import bom_service_pb2, bom_service_pb2_grpc
 
 logger = logging.getLogger(__name__)
@@ -50,9 +55,12 @@ class BOMServiceServicer(bom_service_pb2_grpc.BOMServiceServicer):
                     chokepoints_count=tree.chokepoints_count,
                     overall_cfi_max=tree.overall_cfi_max,
                 )
-            except Exception as e:
-                logger.error(f"gRPC GetBOMTree error: {e}")
-                context.abort(grpc.StatusCode.INTERNAL, str(e))
+            except ProductNotFoundError as e:
+                logger.warning("gRPC GetBOMTree product not found: %s", e)
+                context.abort(grpc.StatusCode.NOT_FOUND, str(e))
+            except Exception:
+                logger.exception("gRPC GetBOMTree internal error for product #%s", request.product_id)
+                context.abort(grpc.StatusCode.INTERNAL, "Внутренняя ошибка сервиса при формировании спецификации")
 
     async def SimulateAnalogSubstitution(self, request, context):
         async with db_manager.get_session() as session:
@@ -70,9 +78,12 @@ class BOMServiceServicer(bom_service_pb2_grpc.BOMServiceServicer):
                     implementation_days=res.lead_time_days,
                     commentary=res.commentary,
                 )
-            except Exception as e:
-                logger.error(f"gRPC SimulateAnalogSubstitution error: {e}")
-                context.abort(grpc.StatusCode.INTERNAL, str(e))
+            except (ComponentNotFoundError, AnalogNotFoundError) as e:
+                logger.warning("gRPC SimulateAnalogSubstitution entity not found: %s", e)
+                context.abort(grpc.StatusCode.NOT_FOUND, str(e))
+            except Exception:
+                logger.exception("gRPC SimulateAnalogSubstitution error for comp #%s", request.component_id)
+                context.abort(grpc.StatusCode.INTERNAL, "Внутренняя ошибка сервиса при симуляции замещения")
 
 
 async def serve_grpc(port: int = 50051) -> grpc.aio.Server:

@@ -9,6 +9,7 @@ from app.config import service_settings
 from app.database import db_manager
 from app.grpc_server import serve_grpc
 from app.middleware import CorrelationIdMiddleware
+from app.middleware.security import SecurityHeadersMiddleware
 
 logging.basicConfig(
     level=logging.INFO,
@@ -22,9 +23,10 @@ async def lifespan(app: FastAPI):
     logger.info("Запуск Matryoshka Enterprise Service...")
     try:
         from matryoshka_db.seed_data import seed_database
+
         await seed_database()
-    except Exception as e:
-        logger.warning(f"Авто-инициализация БД: {e}")
+    except Exception:
+        logger.exception("Авто-инициализация БД завершилась с ошибкой:")
     # Старт фонового gRPC-сервера
     grpc_server = await serve_grpc(service_settings.grpc_port)
     yield
@@ -48,6 +50,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.add_middleware(CorrelationIdMiddleware)
+app.add_middleware(SecurityHeadersMiddleware)
 
 app.include_router(health_router.router)
 app.include_router(bom_router.router)
